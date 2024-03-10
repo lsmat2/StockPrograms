@@ -5,21 +5,11 @@ import nest_asyncio
 nest_asyncio.apply()
 import sys
 
-
-# Verify Program Arguments
-if len(sys.argv) == 1: 
-  print("Provide a symbol as an argument:    test.py <symbol>")
-  exit()
-elif len(sys.argv) > 2:
-  print("Too many arguments provided, only need [1] symbol")
-  exit()
-
-symbol = sys.argv[1]
-print("Program invoked with symbol: ", symbol)
-
+# GLOBAL VARS
 deribitTestUrl = "wss://test.deribit.com/ws/api/v2"
 deribitMainUrl = "wss://www.deribit.com/ws/api/v2"
 
+# ORDERBOOK HELPER FUNCTIONS
 async def updateBids(allBids:list, bidUpdates:list) -> list:
     for bid in bidUpdates:
         # Type: bid[0], Price: bid[1], Quantity: bid[2]
@@ -91,15 +81,12 @@ async def checkFirstResponseForError(jsonResponse:str) -> int:
         errorMessage = jsonResponse["error"]["message"]
         print(f"First Response Error: {errorMessage}")
         return 1
-    
     elif "result" not in jsonResponse:
         print("Missing 'result' field in first response")
         return 2
-    
     elif len(jsonResponse["result"]) == 0:
         print ("Empty 'result' field in first response")
         return 3
-    
     else: return 0
 
 async def checkResponseForError(jsonResponse:str) -> int:
@@ -129,49 +116,31 @@ async def subscribeToOrderbook(symbol):
   # Create websocket connection
   async with websockets.connect(deribitTestUrl) as websocket:
 
-    # Send subscribe request to orderbook
+    # Subscribe to orderbook
     print(f"Subscribing to orderbook for {symbol}")
     subscribeRequest = await getrequestFromSymbol(symbol)
     await websocket.send(json.dumps(subscribeRequest))
 
-    # Receive initial response & check for errors
+    # Check subscription response for errors
     initialResponse = await websocket.recv()
     initialJsonResponse = json.loads(initialResponse)
     initialErrorResponse = await checkFirstResponseForError(initialJsonResponse)
     if (initialErrorResponse != 0): exit()
-
+    
+    # Print subscription confirmation & initialize bid/ask lists
     print(f"Subscribed to {symbol} L2 order book updates.")
     print(f"Response: {initialJsonResponse}\n")
+    allBids = []
+    allAsks = []
 
-    # Receive first data response & extract bids/asks
-    firstResponse = await websocket.recv()
-    firstJsonResponse = json.loads(firstResponse)
-    allBids = firstJsonResponse["params"]["data"]["bids"]
-    allAsks = firstJsonResponse["params"]["data"]["asks"]
-    
-    # Print top 5 sorted bids / bottom 5 sorted asks
-    print("INITIAL BID/ASK LISTS:")
-    await printBestBidsAndAsks(allBids, allAsks)
-
-    
     # Listen for updates
     while True:
         response = await websocket.recv()
         jsonResponse = json.loads(response)
 
-        # Check for error field or lack of params/data (exit if so)
-        if "error" in jsonResponse:
-            errorMessage = jsonResponse["error"]["message"]
-            print(f"Error: {errorMessage}")
-            exit() # ********* HANDLE ERRORS DIFFERENTLY -> RESTART WEBSOCKET CONNECTION
-        elif "params" not in jsonResponse or "data" not in jsonResponse["params"]:
-            print("Deribit response did not contain error, params, or data")
-            exit()
-        # EXTRA ERROR CONDITION
-        # Each notification will contain a change_id field, 
-        # and each message except for the first one will contain a field prev_change_id. 
-        # If prev_change_id is equal to the change_id of the previous message, 
-        # this means that no messages have been missed.
+        # Check response for errors
+        errorResponse = await checkResponseForError(jsonResponse)
+        if (errorResponse != 0) : exit()
 
         # Extract bids/asks updates and adjust respective overall lists
         bidUpdates = jsonResponse["params"]["data"]["bids"]
@@ -182,4 +151,17 @@ async def subscribeToOrderbook(symbol):
         # Print top 5 sorted bids / bottom 5 sorted asks
         await printBestBidsAndAsks(allBids, allAsks)
 
-asyncio.get_event_loop().run_until_complete(subscribeToOrderbook(symbol)) 
+
+# MAIN PROGRAM
+# 1) Verify Command Line Arguments
+if len(sys.argv) == 1: 
+  print("Provide a symbol as an argument:    test.py <symbol>")
+  exit()
+elif len(sys.argv) > 2:
+  print("Too many arguments provided, only need [1] symbol")
+  exit()
+symbol = sys.argv[1]
+print("Program invoked with symbol: ", symbol)
+
+# 2) Subscribe to Orderbook and [something else]
+asyncio.get_event_loop().run_until_complete(subscribeToOrderbook(symbol))
