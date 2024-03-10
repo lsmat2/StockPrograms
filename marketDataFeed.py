@@ -1,161 +1,185 @@
 import asyncio
-import json
 import websockets
-# Test
-
-# Connect to Deribit’s market data API via websocket and subscribe to both the 
-#   L2 orderbook & trade channels in separate threads/tasks 
-# (not a single subscription for both channels) for a single symbol
-#   provided to the program as a command line argument. 
-
-# Both channels should be subscribed to at the 100ms granularity.
+import json
+import nest_asyncio
+nest_asyncio.apply()
+import sys
 
 
-# Size should be rounded to 2 decimal places and price 1 decimal place
-# When an orderbook event is received, the program should output:
-# the best 5 levels on each side of the book, indicating the price & liquidity of those levels.
+# Verify Program Arguments
+if len(sys.argv) == 1: 
+  print("Provide a symbol as an argument:    test.py <symbol>")
+  exit()
+elif len(sys.argv) > 2:
+  print("Too many arguments provided, only need [1] symbol")
+  exit()
 
-# For example:
-# 5.01 @ 36705.4 
-# 32.33 @ 36700.1 
-# 1.14 @ 36698.8 
-# 1.44 @ 36677.4 
-# 2.34 @ 36500.2 
-# ---------------
-# 3.32 @ 36433.1 
-# 2.55 @ 36432.3 
-# 0.67 @ 36421.5 
-# 0.44 @ 36400.3 
-# 1.17 @ 36244.2
+symbol = sys.argv[1]
+print("Program invoked with symbol: ", symbol)
 
-# ____________________________________________________________________________________________________________________
-# REQUEST MESSAGES
+deribitTestUrl = "wss://test.deribit.com/ws/api/v2"
+deribitMainUrl = "wss://www.deribit.com/ws/api/v2"
 
-# "jsonrpc": string - version of JSON-remote procedure call - "2.0"
-# "id": integer/string - request identifier (if included, response will contain same identifier)
-# "method": string - method to be invoked
-# "params" object - parameter values for the specific method - CHECK API FOR CONTENTS RELATING TO SPECIFIC METHODS
+async def updateBids(allBids:list, bidUpdates:list) -> list:
+    for bid in bidUpdates:
+        # Type: bid[0], Price: bid[1], Quantity: bid[2]
+        # print(f"Type: {bid[0]}, Price: {bid[1]}, Quantity: {bid[2]}")
 
-# "instrument" FORMATS:
-#   future: BTC - [date]
-#   perpetual: BTC-PERPETUAL
-#   option: BTC - [date] - [option strike price USD] - [P->put or C->call]
-basicRequest = {
-    "jsonrpc": "2.0",
-    "id": 8066,
-    "method": "public/ticker",
-    "params": {
-        "instrument": "BTC-24AUG18-6500-P"
-    }
-}
+        if bid[0] == "new": # Add to list if 'new' bid
+            allBids.append(bid)
 
-# ------------------------------------
-# RESPONSE MESSAGE (error)
+        elif bid[0] == "delete": # Delete by finding bid with same price (quantity always 0)
+            for otherBid in allBids:
+                if otherBid[1] == bid[1]: 
+                    allBids.remove(otherBid) # removes bid with that price
+                    break
 
-# "jsonrpc": string - version of JSON-remote procedure call - "2.0"
-# "id": integer - same as id sent in request
-# "error": object - 
-#   "code": integer - number indicating kind of error
-#   "message": string - descrption indicating kind of error
-#   [optional] "data": any - additional data about the error
-# "testnet": boolean - TRUE(test server), FALSE(production server)
-# "usIn": integer - timestamp when request was received
-# "usOut": integer - timestamp when response was sent
-# "usDiff": integer - number of microseconds spent handling request
-badResponse = {
-    "jsonrpc": "2.0",
-    "id": 8163,
-    "error": {
-        "code": 11050,
-        "message": "bad_request"
-    },
-    "testnet": False,
-    "usIn": 1535037392434763,
-    "usOut": 1535037392448119,
-    "usDiff": 13356
-}
+        elif bid[0] == "change": # 'change' affects amount -> find bid with same price -> adjust amount
+            for otherBid in allBids:
+                if otherBid[1] == bid[1]:
+                    otherBid[2] = bid[2] # adjusts amount of the bid at that price
+                    break
+    
+    return allBids
 
-# ------------------------------------
-# RESPONSE MESSAGE (successful)
+async def updateAsks(allAsks:list, askUpdates:list) -> list:
+    for ask in askUpdates:
+        # Type: ask[0], Price: ask[1], Quantity: ask[2]
+        # print(f"Type: {ask[0]}, Price: {ask[1]}, Quantity: {ask[2]}")
 
-# "jsonrpc": string - version of JSON-remote procedure call - "2.0"
-# "id": integer - same as id sent in request
-# "testnet": boolean - TRUE(test server), FALSE(production server)
-# "result": object - 
-#   specific to method - CHECK API FOR CONTENTS RELATING TO SPECIFIC METHODS
-# "usIn": integer - timestamp when request was received
-# "usOut": integer - timestamp when response was sent
-# "usDiff": integer - number of microseconds spent handling request
-goodResponse = {
-    "jsonrpc": "2.0",
-    "id": 5239,
-    "testnet": False,
-    "result": [
-        {
-            "coin_type": "BITCOIN",
-            "currency": "BTC",
-            "currency_long": "Bitcoin",
-            "fee_precision": 4,
-            "min_confirmations": 1,
-            "min_withdrawal_fee": 0.0001,
-            "withdrawal_fee": 0.0001,
-            "withdrawal_priorities": [
-                {
-                    "value": 0.15,
-                    "name": "very_low"
-                },
-                {
-                    "value": 1.5,
-                    "name": "very_high"
-                }
-            ]
-        }
-    ],
-    "usIn": 1535043730126248,
-    "usOut": 1535043730126250,
-    "usDiff": 2
-}
+        if ask[0] == "new": # Add to list if 'new' ask
+          allAsks.append(ask)
 
-# ------------------------------------
-# ERROR CONDITIONS
+        elif ask[0] == "delete": # Delete by finding ask with same price (quantity always 0)
+            for otherAsk in allAsks:
+                if otherAsk[1] == ask[1]:
+                    allAsks.remove(otherAsk) # removes ask with that price
+                    break
 
-# 1) If either the book stream OR the trade stream receives an event out of sequence, 
-# an error message should print and the corresponding websocket connection should be restarted.
+        elif ask[0] == "change": # 'change' affects amount -> find ask with same price -> adjust amount
+            for otherAsk in allAsks:
+                if otherAsk[1] == ask[1]: 
+                    otherAsk[2] = ask[2] # adjusts amount of the ask at that price
+                    break
+    
+    return allAsks
 
-# 2) If a websocket connection is disconnected or otherwise interrupted, it should be restarted.
-# ____________________________________________________________________________________________________________________
-
-# group values:
-#   BTC - none, 1, 2, 5, 10
-#   ETH - none, 5, 10, 25, 100, 250 (dividied by 100) : 5 -> 0.05
-# depth values:
-#   1, 10, 20 - number of price levels to be included
-# interval values:
-#   100ms, agg2 - frequency of notifications ****(USE 100ms)****
-async def subscribeToOrderbook(websocket, instrumentName:str, group:str, depth:int, interval:str):
-    subscribeMsg = {
+async def getrequestFromSymbol(symbol:str) -> str:
+    subscribeRequest = {
         "jsonrpc": "2.0",
         "id": 1,
-        "method": "/public/subsribe",
+        "method": "public/subscribe",
         "params": {
-            # notifies about changes to the order book for a certain instrument
-            #   sent once per specified interval
-            #   prices grouped by specified group
-            #   number of price levels by specified depth
-            "channels": [f"book.{instrumentName}.{group}.{depth}.{interval}"]
-        }
+            "channels": [f"book.{symbol}.100ms"]
+        },
     }
+    return subscribeRequest
 
-    await websocket.send(json.dumps(subscribeMsg))
+async def printBestBidsAndAsks(allBids:list[str], allAsks:list[str]):
+    # Sort Bids/Asks & Filter Top/Bottom 5
+    topBids = sorted(allBids, key=lambda x: x[1], reverse=True)[:5]
+    bottomAsks = sorted(allAsks, key=lambda x: x[1], reverse=True)[-5:]
 
-    while (1):
+    # Print Best Bids/Asks
+    for bid in topBids: print(f"{bid[2]} @ {bid[1]}")
+    print("----------------")
+    for ask in bottomAsks: print(f"{ask[2]} @ {ask[1]}")
+    print()
+
+async def checkFirstResponseForError(jsonResponse:str) -> int:
+    if "error" in jsonResponse:
+        errorMessage = jsonResponse["error"]["message"]
+        print(f"First Response Error: {errorMessage}")
+        return 1
+    
+    elif "result" not in jsonResponse:
+        print("Missing 'result' field in first response")
+        return 2
+    
+    elif len(jsonResponse["result"]) == 0:
+        print ("Empty 'result' field in first response")
+        return 3
+    
+    else: return 0
+
+async def checkResponseForError(jsonResponse:str) -> int:
+    if "error" in jsonResponse:
+        errorMessage = jsonResponse["error"]["message"]
+        print(f"Error: {errorMessage}")
+        return 1 # ********* HANDLE ERRORS DIFFERENTLY -> RESTART WEBSOCKET CONNECTION
+    
+    elif "params" not in jsonResponse:
+        print("Missing 'params' field in response")
+        return 2
+    
+    elif "data" not in jsonResponse["params"]:
+        print("Missing 'data' field in response['params']")
+        return 3
+    
+    # EXTRA ERROR CONDITION
+        # Each notification will contain a change_id field, 
+        # and each message except for the first one will contain a field prev_change_id. 
+        # If prev_change_id is equal to the change_id of the previous message, 
+        # this means that no messages have been missed.
+    
+    else: return 0
+
+async def subscribeToOrderbook(symbol):
+
+  # Create websocket connection
+  async with websockets.connect(deribitTestUrl) as websocket:
+
+    # Send subscribe request to orderbook
+    print(f"Subscribing to orderbook for {symbol}")
+    subscribeRequest = await getrequestFromSymbol(symbol)
+    await websocket.send(json.dumps(subscribeRequest))
+
+    # Receive initial response & check for errors
+    initialResponse = await websocket.recv()
+    initialJsonResponse = json.loads(initialResponse)
+    initialErrorResponse = await checkFirstResponseForError(initialJsonResponse)
+    if (initialErrorResponse != 0): exit()
+
+    print(f"Subscribed to {symbol} L2 order book updates.")
+    print(f"Response: {initialJsonResponse}\n")
+
+    # Receive first data response & extract bids/asks
+    firstResponse = await websocket.recv()
+    firstJsonResponse = json.loads(firstResponse)
+    allBids = firstJsonResponse["params"]["data"]["bids"]
+    allAsks = firstJsonResponse["params"]["data"]["asks"]
+    
+    # Print top 5 sorted bids / bottom 5 sorted asks
+    print("INITIAL BID/ASK LISTS:")
+    await printBestBidsAndAsks(allBids, allAsks)
+
+    
+    # Listen for updates
+    while True:
         response = await websocket.recv()
-        print(f"Order Book Update For InstrumentName {instrumentName}: {response}")
+        jsonResponse = json.loads(response)
 
+        # Check for error field or lack of params/data (exit if so)
+        if "error" in jsonResponse:
+            errorMessage = jsonResponse["error"]["message"]
+            print(f"Error: {errorMessage}")
+            exit() # ********* HANDLE ERRORS DIFFERENTLY -> RESTART WEBSOCKET CONNECTION
+        elif "params" not in jsonResponse or "data" not in jsonResponse["params"]:
+            print("Deribit response did not contain error, params, or data")
+            exit()
+        # EXTRA ERROR CONDITION
+        # Each notification will contain a change_id field, 
+        # and each message except for the first one will contain a field prev_change_id. 
+        # If prev_change_id is equal to the change_id of the previous message, 
+        # this means that no messages have been missed.
 
+        # Extract bids/asks updates and adjust respective overall lists
+        bidUpdates = jsonResponse["params"]["data"]["bids"]
+        askUpdates = jsonResponse["params"]["data"]["asks"]
+        allBids = await updateBids(allBids, bidUpdates)
+        allAsks = await updateAsks(allAsks, askUpdates)
+        
+        # Print top 5 sorted bids / bottom 5 sorted asks
+        await printBestBidsAndAsks(allBids, allAsks)
 
-async def main():
-    url = "wss.//www.deribit.com/ws/api/v2"
-
-    # socket = websockets.connect(url)
-    # orderbookTask = asyncio.create_task(subscribeToOrderbook(socket, ))
+asyncio.get_event_loop().run_until_complete(subscribeToOrderbook(symbol)) 
