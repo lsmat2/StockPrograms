@@ -108,47 +108,56 @@ async def checkOrderbookResponseForError(jsonResponse:str) -> int:
     # Compare changeID's
     global lastChangeID
     if "prev_change_id" in jsonResponse["params"]["data"]:
-        if jsonResponse["params"]["data"]["prev_change_id"] != lastChangeID: return 4
+        if jsonResponse["params"]["data"]["prev_change_id"] != lastChangeID:
+            print("Event received out of sequence")
+            return 4
     lastChangeID = jsonResponse["params"]["data"]["change_id"]
 
     return 0
 
 async def subscribeToOrderbook(symbol:str):
-
-  # Create websocket connection
-  async with websockets.connect(deribitMainUrl) as websocket:
-
-    # Subscribe to orderbook
-    print(f"Subscribing to orderbook for {symbol} @ 100ms granularity")
-    subscribeRequest = await getOrderbookRequestFromSymbol(symbol)
-    await websocket.send(json.dumps(subscribeRequest))
-
-    # Check subscription response for errors
-    initialResponse = await websocket.recv()
-    initialJsonResponse = json.loads(initialResponse)
-    initialErrorResponse = await checkFirstResponseForError(initialJsonResponse)
-    if (initialErrorResponse != 0): exit()
-    
-    # Print subscription confirmation & initialize bid/ask lists
-    print(f"Subscribed to {symbol} Orderbook.")
-    allBids = []
-    allAsks = []
-
-    # Listen for updates
+  
     while True:
-        response = await websocket.recv()
-        jsonResponse = json.loads(response)
+        try:
+            # Create websocket connection
+            async with websockets.connect(deribitMainUrl) as websocket:
 
-        # Check response for errors
-        errorResponse = await checkOrderbookResponseForError(jsonResponse)
-        if (errorResponse != 0): exit()
+                # Subscribe to orderbook
+                print(f"Subscribing to orderbook for {symbol} @ 100ms granularity")
+                subscribeRequest = await getOrderbookRequestFromSymbol(symbol)
+                await websocket.send(json.dumps(subscribeRequest))
 
-        # Extract bids/asks updates, update 'best 5' lists, & print
-        bidUpdates = jsonResponse["params"]["data"]["bids"]
-        askUpdates = jsonResponse["params"]["data"]["asks"]
-        allBids = await updateBids(allBids, bidUpdates)
-        allAsks = await updateAsks(allAsks, askUpdates)
-        await printBestBidsAndAsks(allBids, allAsks)
+                # Check subscription response for errors
+                initialResponse = await websocket.recv()
+                initialJsonResponse = json.loads(initialResponse)
+                initialErrorResponse = await checkFirstResponseForError(initialJsonResponse)
+                if (initialErrorResponse != 0): await websocket.close()
+                
+                # Print subscription confirmation & initialize bid/ask lists
+                print(f"Subscribed to {symbol} Orderbook.")
+                allBids = []
+                allAsks = []
+
+                # Listen for updates
+                while True:
+                    response = await websocket.recv()
+                    jsonResponse = json.loads(response)
+
+                    # Check response for errors
+                    errorResponse = await checkOrderbookResponseForError(jsonResponse)
+                    if (errorResponse != 0): await websocket.close()
+
+                    # Extract bids/asks updates, update 'best 5' lists, & print
+                    bidUpdates = jsonResponse["params"]["data"]["bids"]
+                    askUpdates = jsonResponse["params"]["data"]["asks"]
+                    allBids = await updateBids(allBids, bidUpdates)
+                    allAsks = await updateAsks(allAsks, askUpdates)
+                    await printBestBidsAndAsks(allBids, allAsks)
+    
+        except websockets.exceptions.ConnectionClosed:
+            # Wait 3 seconds and restart connection
+            print("Orderbook websocket connection closed. Reconnecting...")
+            await asyncio.sleep(3)
 
 # TRADE CHANNEL HELPER FUNCTIONS
 async def getTradeChannelRequestFromSymbol(symbol:str) -> str:
@@ -207,35 +216,42 @@ async def checkTradeChannelResponseForError(jsonResponse) -> int:
 
 async def subscribeToTradeChannel(symbol:str):
 
-    # Create websocket connection
-    async with websockets.connect(deribitMainUrl) as websocket:
+    while True:
+        try:
+            # Create websocket connection
+            async with websockets.connect(deribitMainUrl) as websocket:
 
-        # Subscribe to trade channel
-        print(f"Subscribing to trade channel for {symbol} @ 100ms granularity")
-        subscribeRequest = await getTradeChannelRequestFromSymbol(symbol)
-        await websocket.send(json.dumps(subscribeRequest))
+                # Subscribe to trade channel
+                print(f"Subscribing to trade channel for {symbol} @ 100ms granularity")
+                subscribeRequest = await getTradeChannelRequestFromSymbol(symbol)
+                await websocket.send(json.dumps(subscribeRequest))
 
-         # Check subscription response for errors
-        initialResponse = await websocket.recv()
-        initialJsonResponse = json.loads(initialResponse)
-        initialErrorResponse = await checkFirstResponseForError(initialJsonResponse)
-        if (initialErrorResponse != 0): exit()
+                # Check subscription response for errors
+                initialResponse = await websocket.recv()
+                initialJsonResponse = json.loads(initialResponse)
+                initialErrorResponse = await checkFirstResponseForError(initialJsonResponse)
+                if (initialErrorResponse != 0): await websocket.close()
 
-        # Print subscription confirmation
-        print(f"Subscribed to {symbol} Trade Channel.")
+                # Print subscription confirmation
+                print(f"Subscribed to {symbol} Trade Channel.")
 
-        # Listen for updates
-        while True:
-            response = await websocket.recv()
-            jsonResponse = json.loads(response)
+                # Listen for updates
+                while True:
+                    response = await websocket.recv()
+                    jsonResponse = json.loads(response)
 
-            # Check response for errors
-            errorResponse = await checkTradeChannelResponseForError(jsonResponse)
-            if (errorResponse != 0): exit()
+                    # Check response for errors
+                    errorResponse = await checkTradeChannelResponseForError(jsonResponse)
+                    if (errorResponse != 0): await websocket.close()
 
-            # Extract prices/amounts/directions from response & print
-            tradeEvents = jsonResponse["params"]["data"]
-            await printTradeEvents(tradeEvents)
+                    # Extract prices/amounts/directions from response & print
+                    tradeEvents = jsonResponse["params"]["data"]
+                    await printTradeEvents(tradeEvents)
+        
+        except websockets.exceptions.ConnectionClosed:
+            # Wait 3 seconds and restart connection
+            print("Trade Channel websocket connection closed. Reconnecting...")
+            await asyncio.sleep(3)
 
 # MAIN FUNCTION
 async def main(symbol):
@@ -252,7 +268,7 @@ async def main(symbol):
 
 # 1) Verify Command Line Arguments
 if len(sys.argv) == 1: 
-  print("Provide a symbol as an argument:    test.py <symbol>")
+  print("Provide a symbol as an argument:       marketDataFeed.py <symbol>")
   exit()
 elif len(sys.argv) > 2:
   print("Too many arguments provided, only need [1] symbol")
