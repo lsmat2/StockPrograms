@@ -8,6 +8,7 @@ import sys
 # GLOBAL VARS
 deribitTestUrl = "wss://test.deribit.com/ws/api/v2"
 deribitMainUrl = "wss://www.deribit.com/ws/api/v2"
+lastChangeID = ""
 
 # ORDERBOOK HELPER FUNCTIONS
 async def updateBids(allBids:list, bidUpdates:list) -> list:
@@ -94,28 +95,28 @@ async def checkOrderbookResponseForError(jsonResponse:str) -> int:
     if "error" in jsonResponse:
         errorMessage = jsonResponse["error"]["message"]
         print(f"Error: {errorMessage}")
-        return 1 # ********* HANDLE ERRORS DIFFERENTLY -> RESTART WEBSOCKET CONNECTION
+        return 1
     
-    elif "params" not in jsonResponse:
+    if "params" not in jsonResponse:
         print("Missing 'params' field in response")
         return 2
     
-    elif "data" not in jsonResponse["params"]:
+    if "data" not in jsonResponse["params"]:
         print("Missing 'data' field in response['params']")
         return 3
     
-    # EXTRA ERROR CONDITION
-        # Each notification will contain a change_id field, 
-        # and each message except for the first one will contain a field prev_change_id. 
-        # If prev_change_id is equal to the change_id of the previous message, 
-        # this means that no messages have been missed.
-    
-    else: return 0
+    # Compare changeID's
+    global lastChangeID
+    if "prev_change_id" in jsonResponse["params"]["data"]:
+        if jsonResponse["params"]["data"]["prev_change_id"] != lastChangeID: return 4
+    lastChangeID = jsonResponse["params"]["data"]["change_id"]
+
+    return 0
 
 async def subscribeToOrderbook(symbol:str):
 
   # Create websocket connection
-  async with websockets.connect(deribitTestUrl) as websocket:
+  async with websockets.connect(deribitMainUrl) as websocket:
 
     # Subscribe to orderbook
     print(f"Subscribing to orderbook for {symbol} @ 100ms granularity")
