@@ -54,7 +54,7 @@ async def updateAsks(allAsks:list, askUpdates:list) -> list:
     
     return allAsks
 
-async def getrequestFromSymbol(symbol:str) -> str:
+async def getOrderbookRequestFromSymbol(symbol:str) -> str:
     subscribeRequest = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -89,7 +89,7 @@ async def checkFirstResponseForError(jsonResponse:str) -> int:
         return 3
     else: return 0
 
-async def checkResponseForError(jsonResponse:str) -> int:
+async def checkOrderbookResponseForError(jsonResponse:str) -> int:
     if "error" in jsonResponse:
         errorMessage = jsonResponse["error"]["message"]
         print(f"Error: {errorMessage}")
@@ -111,14 +111,14 @@ async def checkResponseForError(jsonResponse:str) -> int:
     
     else: return 0
 
-async def subscribeToOrderbook(symbol):
+async def subscribeToOrderbook(symbol:str):
 
   # Create websocket connection
   async with websockets.connect(deribitTestUrl) as websocket:
 
     # Subscribe to orderbook
-    print(f"Subscribing to orderbook for {symbol}")
-    subscribeRequest = await getrequestFromSymbol(symbol)
+    print(f"Subscribing to orderbook for {symbol} @ 100ms granularity")
+    subscribeRequest = await getOrderbookRequestFromSymbol(symbol)
     await websocket.send(json.dumps(subscribeRequest))
 
     # Check subscription response for errors
@@ -128,8 +128,7 @@ async def subscribeToOrderbook(symbol):
     if (initialErrorResponse != 0): exit()
     
     # Print subscription confirmation & initialize bid/ask lists
-    print(f"Subscribed to {symbol} L2 order book updates.")
-    print(f"Response: {initialJsonResponse}\n")
+    print(f"Subscribed to {symbol} Orderbook.")
     allBids = []
     allAsks = []
 
@@ -139,20 +138,109 @@ async def subscribeToOrderbook(symbol):
         jsonResponse = json.loads(response)
 
         # Check response for errors
-        errorResponse = await checkResponseForError(jsonResponse)
-        if (errorResponse != 0) : exit()
+        errorResponse = await checkOrderbookResponseForError(jsonResponse)
+        if (errorResponse != 0): exit()
 
-        # Extract bids/asks updates and adjust respective overall lists
+        # Extract bids/asks updates, update 'best 5' lists, & print
         bidUpdates = jsonResponse["params"]["data"]["bids"]
         askUpdates = jsonResponse["params"]["data"]["asks"]
         allBids = await updateBids(allBids, bidUpdates)
         allAsks = await updateAsks(allAsks, askUpdates)
-        
-        # Print top 5 sorted bids / bottom 5 sorted asks
         await printBestBidsAndAsks(allBids, allAsks)
 
+# TRADE CHANNEL HELPER FUNCTIONS
+async def getTradeChannelRequestFromSymbol(symbol:str) -> str:
+    subscribeRequest = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "public/subscribe",
+        "params": {
+            "channels": [f"trades.{symbol}.100ms"]
+        },
+    }
+    return subscribeRequest        
 
-# MAIN PROGRAM
+async def printTradeEvents(tradeEvents:list[dict]):
+    totalAmount = 0
+    price = 0
+    direction = ""
+
+    for tradeEvent in tradeEvents:
+        totalAmount += tradeEvent["amount"]
+        # Price & Direction is the same for each 'event'
+        price = tradeEvent["price"]
+        direction = tradeEvent["direction"]
+
+    if direction == "buy": print(f"\nBOUGHT {totalAmount} @ {price}\n")
+    else: print(f"\nSOLD {totalAmount} @ {price}\n")
+
+async def checkTradeChannelResponseForError(jsonResponse) -> int:
+    if "error" in jsonResponse:
+        errorMessage = jsonResponse["error"]["message"]
+        print(f"Error: {errorMessage}")
+        return 1 # ********* HANDLE ERRORS DIFFERENTLY -> RESTART WEBSOCKET CONNECTION
+    
+    elif "params" not in jsonResponse:
+        print("Missing 'params' field in response")
+        return 2
+    
+    elif "data" not in jsonResponse["params"]:
+        print("Missing 'data' field in response['params']")
+        return 3
+    
+    tradeEvents = jsonResponse["params"]["data"]
+    
+    for tradeEvent in tradeEvents:
+        if "amount" not in tradeEvent:
+            print ("Missing 'amount' field in tradeEvent")
+            return 4
+        elif "price" not in tradeEvent:
+            print ("Missing 'price' field in tradeEvent")
+            return 5
+        elif "direction" not in tradeEvent:
+            print ("Missing 'direction' field in tradeEvent")
+            return 6
+
+    return 0
+
+async def subscribeToTradeChannel(symbol:str):
+
+    # Create websocket connection
+    async with websockets.connect(deribitMainUrl) as websocket:
+
+        # Subscribe to trade channel
+        print(f"Subscribing to trade channel for {symbol} @ 100ms granularity")
+        subscribeRequest = await getTradeChannelRequestFromSymbol(symbol)
+        await websocket.send(json.dumps(subscribeRequest))
+
+         # Check subscription response for errors
+        initialResponse = await websocket.recv()
+        initialJsonResponse = json.loads(initialResponse)
+        initialErrorResponse = await checkFirstResponseForError(initialJsonResponse)
+        if (initialErrorResponse != 0): exit()
+
+        # Print subscription confirmation
+        print(f"Subscribed to {symbol} Trade Channel.")
+
+        # Listen for updates
+        while True:
+            response = await websocket.recv()
+            jsonResponse = json.loads(response)
+
+            # Check response for errors
+            errorResponse = await checkTradeChannelResponseForError(jsonResponse)
+            if (errorResponse != 0): exit()
+
+            # Extract prices/amounts/directions from response & print
+            tradeEvents = jsonResponse["params"]["data"]
+            await printTradeEvents(tradeEvents)
+
+
+
+
+
+# -------------------------------------MAIN PROGRAM-------------------------------------
+
 # 1) Verify Command Line Arguments
 if len(sys.argv) == 1: 
   print("Provide a symbol as an argument:    test.py <symbol>")
@@ -163,5 +251,13 @@ elif len(sys.argv) > 2:
 symbol = sys.argv[1]
 print("Program invoked with symbol: ", symbol)
 
-# 2) Subscribe to Orderbook and [something else]
-asyncio.get_event_loop().run_until_complete(subscribeToOrderbook(symbol))
+# 2) Subscribe to Orderbook and ***TRADE EVENTS***
+# async def main():
+    # orderbookTask = asyncio.create_task(subscribeToOrderbook(symbol))
+    # tradeChannelTask = asyncio.create_task(subscribeToTradeChannel(symbol))
+    # await orderbookTask
+    # await tradeChannelTask
+
+# tradeChannelTask = asyncio.create_task(subscribeToTradeChannel(symbol))
+tradeChannelTask = asyncio.get_event_loop().run_until_complete(subscribeToTradeChannel(symbol))
+# asyncio.run(main())
