@@ -71,6 +71,7 @@ async def printBestBidsAndAsks(allBids:list[str], allAsks:list[str]):
     bottomAsks = sorted(allAsks, key=lambda x: x[1], reverse=True)[-5:]
 
     # Print Best Bids/Asks
+    print()
     for bid in topBids: print(f"{bid[2]} @ {bid[1]}")
     print("----------------")
     for ask in bottomAsks: print(f"{ask[2]} @ {ask[1]}")
@@ -235,7 +236,14 @@ async def subscribeToTradeChannel(symbol:str):
             tradeEvents = jsonResponse["params"]["data"]
             await printTradeEvents(tradeEvents)
 
-
+# MAIN FUNCTION
+async def main(symbol):
+    # Create both tasks
+    orderbookTask = asyncio.create_task(subscribeToOrderbook(symbol))
+    tradeChannelTask = asyncio.create_task(subscribeToTradeChannel(symbol))
+    # Wait for both to complete
+    await orderbookTask
+    await tradeChannelTask
 
 
 
@@ -251,13 +259,5 @@ elif len(sys.argv) > 2:
 symbol = sys.argv[1]
 print("Program invoked with symbol: ", symbol)
 
-# 2) Subscribe to Orderbook and ***TRADE EVENTS***
-# async def main():
-    # orderbookTask = asyncio.create_task(subscribeToOrderbook(symbol))
-    # tradeChannelTask = asyncio.create_task(subscribeToTradeChannel(symbol))
-    # await orderbookTask
-    # await tradeChannelTask
-
-# tradeChannelTask = asyncio.create_task(subscribeToTradeChannel(symbol))
-tradeChannelTask = asyncio.get_event_loop().run_until_complete(subscribeToTradeChannel(symbol))
-# asyncio.run(main())
+# 2) Subscribe to Orderbook and Trade Events
+asyncio.run(main(symbol))
