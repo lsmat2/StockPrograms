@@ -153,7 +153,7 @@ async def subscribeToOrderbook(symbol:str):
                     await printBestBidsAndAsks(allBids, allAsks)
     
         except websockets.exceptions.ConnectionClosed:
-            # Wait 3 seconds and restart connection
+            # Wait & restart connection
             print("Orderbook websocket connection closed. Reconnecting...")
             await asyncio.sleep(5)
 
@@ -247,7 +247,7 @@ async def subscribeToTradeChannel(symbol:str):
                     await printTradeEvents(tradeEvents)
         
         except websockets.exceptions.ConnectionClosed:
-            # Wait 3 seconds and restart connection
+            # Wait & restart connection
             print("Trade Channel websocket connection closed. Reconnecting...")
             await asyncio.sleep(5)
 
