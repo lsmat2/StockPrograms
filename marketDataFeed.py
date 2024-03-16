@@ -1,8 +1,6 @@
 import asyncio
 import websockets
 import json
-import nest_asyncio
-nest_asyncio.apply()
 import sys
 
 # GLOBAL VARS
@@ -157,7 +155,7 @@ async def subscribeToOrderbook(symbol:str):
         except websockets.exceptions.ConnectionClosed:
             # Wait 3 seconds and restart connection
             print("Orderbook websocket connection closed. Reconnecting...")
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)
 
 # TRADE CHANNEL HELPER FUNCTIONS
 async def getTradeChannelRequestFromSymbol(symbol:str) -> str:
@@ -189,7 +187,7 @@ async def checkTradeChannelResponseForError(jsonResponse) -> int:
     if "error" in jsonResponse:
         errorMessage = jsonResponse["error"]["message"]
         print(f"Error: {errorMessage}")
-        return 1 # ********* HANDLE ERRORS DIFFERENTLY -> RESTART WEBSOCKET CONNECTION
+        return 1
     
     elif "params" not in jsonResponse:
         print("Missing 'params' field in response")
@@ -251,30 +249,29 @@ async def subscribeToTradeChannel(symbol:str):
         except websockets.exceptions.ConnectionClosed:
             # Wait 3 seconds and restart connection
             print("Trade Channel websocket connection closed. Reconnecting...")
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)
 
 # MAIN FUNCTION
 async def main(symbol):
     # Create both tasks
     orderbookTask = asyncio.create_task(subscribeToOrderbook(symbol))
     tradeChannelTask = asyncio.create_task(subscribeToTradeChannel(symbol))
-    # Wait for both to complete
+    # 'Wait' for both to complete
     await orderbookTask
     await tradeChannelTask
 
-
-
 # -------------------------------------MAIN PROGRAM-------------------------------------
 
+if __name__ == "__main__":
 # 1) Verify Command Line Arguments
-if len(sys.argv) == 1: 
-  print("Provide a symbol as an argument:       marketDataFeed.py <symbol>")
-  exit()
-elif len(sys.argv) > 2:
-  print("Too many arguments provided, only need [1] symbol")
-  exit()
-symbol = sys.argv[1]
-print("Program invoked with symbol: ", symbol)
+    if len(sys.argv) == 1: 
+        print("Provide a symbol as an argument:       marketDataFeed.py <symbol>")
+        exit()
+    elif len(sys.argv) > 2:
+        print("Too many arguments provided, provide only [1] symbol")
+        exit()
+    symbol = sys.argv[1]
+    print("Program invoked with symbol: ", symbol)
 
 # 2) Subscribe to Orderbook and Trade Events
-asyncio.run(main(symbol))
+    asyncio.run(main(symbol))
