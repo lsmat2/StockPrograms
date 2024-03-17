@@ -5,22 +5,32 @@ from marketDataFeed import checkFirstResponseForError, checkOrderbookResponseFor
 async def testCheckFirstReponseForError():
 
     # Error: Includes 'error' field
-    jsonResponse1 = {"error": {"message": "Error message"}}
+    jsonResponse1 = {
+        "error": {
+            "message": "Error message"
+        }
+    }
     response1 = await checkFirstResponseForError(jsonResponse1)
     assert response1 == 1
 
     # Error: Missing 'result' field
-    jsonResponse2 = {"empty": []}
+    jsonResponse2 = {
+        "empty": []
+    }
     response2 = await checkFirstResponseForError(jsonResponse2)
     assert response2 == 2
 
     # Error: Empty 'result' field
-    jsonResponse3 = {"result": []}
+    jsonResponse3 = {
+        "result": []
+    }
     response3 = await checkFirstResponseForError(jsonResponse3)
     assert response3 == 3
 
     # No Error
-    jsonResponse4 = {"result": ["data1", "data2"]}
+    jsonResponse4 = {
+        "result": ["data1", "data2"]
+    }
     response4 = await checkFirstResponseForError(jsonResponse4)
     assert response4 == 0
 
