@@ -2,11 +2,26 @@ import asyncio
 import websockets
 import json
 import sys
+from pprint import pprint
 
 # GLOBAL VARS
 deribitTestUrl = "wss://test.deribit.com/ws/api/v2"
 deribitMainUrl = "wss://www.deribit.com/ws/api/v2"
 lastChangeID = ""
+
+heartbeatInitRequest = {
+    "method": "public/set_heartbeat",
+    "params": { "interval":15 },
+    "jsonrpc": "2.0",
+    "id": 1
+}
+
+heartbeatNotificationRequest = {
+    "method": "public/test",
+    "params": {},
+    "jsonrpc": "2.0",
+    "id": 2
+}
 
 # ORDERBOOK HELPER FUNCTIONS
 async def updateBids(allBids:list, bidUpdates:list) -> list:
@@ -157,6 +172,44 @@ async def subscribeToOrderbook(symbol:str):
             print("Orderbook websocket connection closed. Reconnecting...")
             await asyncio.sleep(5)
 
+# HEARTBEAT HELPER FUNCTIONS
+async def checkHeartbeatResponseForError(jsonResponse:str) -> int:
+    if "error" in jsonResponse:
+        errorMessage = jsonResponse["error"]["message"]
+        print(f"Error: {errorMessage}")
+        return 1
+    
+    if "params" not in jsonResponse:
+        print("Missing 'params' field in response")
+        return 2
+    
+    if "type" not in jsonResponse["params"]:
+        print("Missing 'type' field in response['params']")
+        return 3
+    
+    return 0
+
+async def typeOfResponse(jsonResponse:str) -> int:
+    # Error indicator
+    if "error" in jsonResponse:
+        return 1
+    # Heartbeat/Trade Channel indicators
+    if "params" in jsonResponse:
+        # Heartbeat
+        if "type" in jsonResponse["params"]:
+            responseType = jsonResponse["params"]["type"]
+            if (responseType == "test_request"):
+                return 2
+            if (responseType == "heartbeat"):
+                return 3
+        # Trade Channel
+        if "data" in jsonResponse["params"]:
+            return 4
+    # Neither error, trade channel, or heartbeat indicator (/public/test response?)
+    if "id" in jsonResponse:
+        if jsonResponse["id"] == 2: return 5
+    return 6
+
 # TRADE CHANNEL HELPER FUNCTIONS
 async def getTradeChannelRequestFromSymbol(symbol:str) -> str:
     subscribeRequest = {
@@ -183,7 +236,7 @@ async def printTradeEvents(tradeEvents:list[dict]):
     if direction == "buy": print(f"\nBOUGHT {totalAmount} @ {price}\n")
     else: print(f"\nSOLD {totalAmount} @ {price}\n")
 
-async def checkTradeChannelResponseForError(jsonResponse) -> int:
+async def checkTradeChannelResponseForError(jsonResponse:str) -> int:
     if "error" in jsonResponse:
         errorMessage = jsonResponse["error"]["message"]
         print(f"Error: {errorMessage}")
@@ -219,16 +272,28 @@ async def subscribeToTradeChannel(symbol:str):
             # Create websocket connection
             async with websockets.connect(deribitMainUrl) as websocket:
 
+                # Connect to hearbeat mechanism
+                print("Connecting to heartbeat mechanism")
+                await websocket.send(json.dumps(heartbeatInitRequest))
+                heartbeatInitResponse = await websocket.recv()
+                heartbeatInitResponse = json.loads(heartbeatInitResponse)
+                initialHeartbeatErrorResponse = await checkFirstResponseForError(heartbeatInitResponse)
+                if (initialHeartbeatErrorResponse != 0): 
+                    print("*error1*, response:")
+                    pprint(heartbeatInitResponse)
+                    await websocket.close()
+
                 # Subscribe to trade channel
                 print(f"Subscribing to trade channel for {symbol} @ 100ms granularity")
                 subscribeRequest = await getTradeChannelRequestFromSymbol(symbol)
                 await websocket.send(json.dumps(subscribeRequest))
-
-                # Check subscription response for errors
-                initialResponse = await websocket.recv()
-                initialJsonResponse = json.loads(initialResponse)
-                initialErrorResponse = await checkFirstResponseForError(initialJsonResponse)
-                if (initialErrorResponse != 0): await websocket.close()
+                tradeChannelInitResponse = await websocket.recv()
+                tradeChannelInitResponse = json.loads(tradeChannelInitResponse)
+                tradeChannelInitErrorResponse = await checkFirstResponseForError(tradeChannelInitResponse)
+                if (tradeChannelInitErrorResponse != 0): 
+                    print("*error2*, response:")
+                    pprint(tradeChannelInitResponse)
+                    await websocket.close()
 
                 # Print subscription confirmation
                 print(f"Subscribed to {symbol} Trade Channel.")
@@ -238,26 +303,52 @@ async def subscribeToTradeChannel(symbol:str):
                     response = await websocket.recv()
                     jsonResponse = json.loads(response)
 
-                    # Check response for errors
-                    errorResponse = await checkTradeChannelResponseForError(jsonResponse)
-                    if (errorResponse != 0): await websocket.close()
+                    # Determine if heartbeat request or trade channel notification
+                    typeResponse = await typeOfResponse(jsonResponse)
+                    print("type of response:", typeResponse)
+                    if len(jsonResponse) < 200: pprint(jsonResponse)
+                    else: print("too long of response")
+                    
+                    # Handle Response Based On Type
+                    if (typeResponse == 1): 
+                        print("Error, restarting websocket")
+                        await websocket.close()
 
-                    # Extract prices/amounts/directions from response & print
-                    tradeEvents = jsonResponse["params"]["data"]
-                    await printTradeEvents(tradeEvents)
+                    # Handle heartbeat request
+                    elif (typeResponse == 2):
+                        print("Sending back heartbeat")
+                        await websocket.send(json.dumps(heartbeatNotificationRequest))
+
+                    elif (typeResponse == 4):
+                        # Check response for errors
+                        errorResponse = await checkTradeChannelResponseForError(jsonResponse)
+                        if (errorResponse != 0): 
+                            print("*tradeChannelError*, restarting websocket:")
+                            await websocket.close()
+
+                        # Extract prices/amounts/directions from response & print
+                        # tradeEvents = jsonResponse["params"]["data"]
+                        # await printTradeEvents(tradeEvents)
+
+                    elif (typeResponse == 3) or (typeResponse == 6):
+                        print("null heartbeat response OR nothing...")
+                        print("*null*, response:")
+                        pprint(jsonResponse)
         
         except websockets.exceptions.ConnectionClosed:
             # Wait & restart connection
             print("Trade Channel websocket connection closed. Reconnecting...")
             await asyncio.sleep(5)
 
+# SUBSCRIBE TO HEARTBEAT MECHANISMS
+
 # MAIN FUNCTION
 async def main(symbol):
-    # Create both tasks
-    orderbookTask = asyncio.create_task(subscribeToOrderbook(symbol))
+    # Create tasks
+    # orderbookTask = asyncio.create_task(subscribeToOrderbook(symbol))
     tradeChannelTask = asyncio.create_task(subscribeToTradeChannel(symbol))
     # 'Wait' for both to complete
-    await orderbookTask
+    # await orderbookTask
     await tradeChannelTask
 
 # -------------------------------------MAIN PROGRAM-------------------------------------
