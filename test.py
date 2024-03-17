@@ -5,18 +5,18 @@ import nest_asyncio
 nest_asyncio.apply()
 from pprint import pprint
 
-import sys 
+# import sys 
   
-if len(sys.argv) == 1: 
-  print("Provide a symbol as an argument:    test.py <symbol>")
-  exit()
+# if len(sys.argv) == 1: 
+#   print("Provide a symbol as an argument:    test.py <symbol>")
+#   exit()
 
-elif len(sys.argv) > 2:
-  print("Too many arguments provided, only need [1] symbol")
-  exit()
+# elif len(sys.argv) > 2:
+#   print("Too many arguments provided, only need [1] symbol")
+#   exit()
 
-symbol = sys.argv[1]
-print("Program invoked with symbol: ", symbol)
+# symbol = sys.argv[1]
+# print("Program invoked with symbol: ", symbol)
 
 
 # DO NOT RUN USING HOMEBREW / 'RUN' BOTTOM IN TOP RIGHT CORNER
@@ -87,6 +87,68 @@ orderbookMsg = {
 
 deribitTestUrl = "wss://test.deribit.com/ws/api/v2"
 deribitMainUrl = "wss://www.deribit.com/ws/api/v2"
+
+
+ex = {
+        "params":{ "type":"test_request" },
+        "method":"heartbeat",
+        "jsonrpc":"2.0"
+    }
+
+async def heartbeat():
+
+  async with websockets.connect(deribitMainUrl) as websocket:
+
+    # Connect to hearbeat connection
+    heartbeatInitRequest = {
+      "method": "public/set_heartbeat",
+      "params": {
+        "interval":10
+      },
+      "jsonrpc":"2.0",
+      "id":7
+    }
+    print("Sending request")
+    await websocket.send(json.dumps(heartbeatInitRequest))
+    heartbeatInitResponse = await websocket.recv()
+    heartbeatInitResponse = json.loads(heartbeatInitResponse)
+    print("heartbeatInitResponse:\n")
+    print("type(heartbeatInitResponse)", type(heartbeatInitResponse))
+    pprint(heartbeatInitResponse)
+
+    while True:
+      response = await websocket.recv()
+      response = json.loads(response)
+      print("response:\n")
+      print("type(response)", type(response))
+      pprint(response)
+      if "params" in response:
+        rParams = response["params"]
+        if "type" in rParams:
+          rpType = rParams["type"]
+          print("type: ", rpType)
+          if rpType == "test_request":
+
+            heartbeatRequest = {
+              "method": "public/test",
+              "params": {},
+              "jsonrpc": "2.0",
+              "id": 8
+            }
+            await websocket.send(json.dumps(heartbeatRequest))
+            heartbeatResponse = await websocket.recv()
+            print("heartbeatResponse:\n")
+            print("type(heartbeatResponse)", type(heartbeatResponse))
+            pprint(heartbeatResponse)
+
+
+
+
+    
+
+
+
+
 
 
 
@@ -309,4 +371,4 @@ async def subscribeToOrderbook2(symbol):
       print()
 
 
-asyncio.get_event_loop().run_until_complete(subscribeToOrderbook("BTC-PERPETUAL"))
+asyncio.get_event_loop().run_until_complete(heartbeat())
