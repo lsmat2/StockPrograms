@@ -23,6 +23,66 @@ heartbeatNotificationRequest = {
     "id": 2
 }
 
+# HEARTBEAT HELPER FUNCTIONS
+async def checkHeartbeatResponseForError(jsonResponse:str) -> int:
+    if "error" in jsonResponse:
+        errorMessage = jsonResponse["error"]["message"]
+        print(f"Error: {errorMessage}")
+        return 1
+    
+    if "params" not in jsonResponse:
+        print("Missing 'params' field in response")
+        return 2
+    
+    if "type" not in jsonResponse["params"]:
+        print("Missing 'type' field in response['params']")
+        return 3
+    
+    return 0
+
+async def typeOfResponseOB(jsonResponse:str) -> int:
+    # Error indicator
+    if "error" in jsonResponse:
+        print("Error in response, restarting websocket")
+        return 1
+    # Heartbeat/Trade Channel indicators
+    if "params" in jsonResponse:
+        # Heartbeat
+        if "type" in jsonResponse["params"]:
+            if (jsonResponse["params"]["type"] == "test_request"): return 2
+            if (jsonResponse["params"]["type"] == "heartbeat"): return 3
+        # Trade Channel
+        if "data" in jsonResponse["params"]:
+            orderbookResponse = await checkOrderbookResponseForError(jsonResponse)
+            if (orderbookResponse != 0): return 1
+            else: return 4
+    # Heartbeat Response Confirmation
+    if "id" in jsonResponse and jsonResponse["id"] == 2: return 5
+    # Unknown Response
+    return 6
+
+async def typeOfResponseTC(jsonResponse:str) -> int:
+    # Error indicator
+    if "error" in jsonResponse:
+        print("Error in response, restarting websocket")
+        return 1
+    # Heartbeat/Trade Channel indicators
+    if "params" in jsonResponse:
+        # Heartbeat
+        if "type" in jsonResponse["params"]:
+            if (jsonResponse["params"]["type"] == "test_request"): return 2
+            if (jsonResponse["params"]["type"] == "heartbeat"): return 3
+        # Trade Channel
+        if "data" in jsonResponse["params"]:
+            tradeChannelResponse = await checkTradeChannelResponseForError(jsonResponse)
+            if (tradeChannelResponse != 0): return 1
+            else: return 4
+    # Heartbeat Response Confirmation
+    if "id" in jsonResponse and jsonResponse["id"] == 2: return 5
+    # Unknown Response
+    return 6
+
+
 # ORDERBOOK HELPER FUNCTIONS
 async def updateBids(allBids:list, bidUpdates:list) -> list:
     for bid in bidUpdates:
@@ -69,9 +129,10 @@ async def updateAsks(allAsks:list, askUpdates:list) -> list:
     return allAsks
 
 async def getOrderbookRequestFromSymbol(symbol:str) -> str:
+    print(f"Subscribing to orderbook for {symbol} @ 100ms granularity")
     subscribeRequest = {
         "jsonrpc": "2.0",
-        "id": 1,
+        "id": 3,
         "method": "public/subscribe",
         "params": {
             "channels": [f"book.{symbol}.100ms"]
@@ -135,15 +196,20 @@ async def subscribeToOrderbook(symbol:str):
             # Create websocket connection
             async with websockets.connect(deribitMainUrl) as websocket:
 
+                # Connect to hearbeat mechanism
+                print("Connecting to heartbeat mechanism")
+                await websocket.send(json.dumps(heartbeatInitRequest))
+                heartbeatInitResponse = await websocket.recv()
+                initialHeartbeatErrorResponse = await checkFirstResponseForError(json.loads(heartbeatInitResponse))
+                if (initialHeartbeatErrorResponse != 0): await websocket.close()
+
                 # Subscribe to orderbook
-                print(f"Subscribing to orderbook for {symbol} @ 100ms granularity")
                 subscribeRequest = await getOrderbookRequestFromSymbol(symbol)
                 await websocket.send(json.dumps(subscribeRequest))
 
                 # Check subscription response for errors
                 initialResponse = await websocket.recv()
-                initialJsonResponse = json.loads(initialResponse)
-                initialErrorResponse = await checkFirstResponseForError(initialJsonResponse)
+                initialErrorResponse = await checkFirstResponseForError(json.loads(initialResponse))
                 if (initialErrorResponse != 0): await websocket.close()
                 
                 # Print subscription confirmation & initialize bid/ask lists
@@ -153,68 +219,36 @@ async def subscribeToOrderbook(symbol:str):
 
                 # Listen for updates
                 while True:
+                    # Determine type of response
                     response = await websocket.recv()
-                    jsonResponse = json.loads(response)
+                    typeResponse = await typeOfResponseOB(json.loads(response))
 
-                    # Check response for errors
-                    errorResponse = await checkOrderbookResponseForError(jsonResponse)
-                    if (errorResponse != 0): await websocket.close()
+                    # Error Response
+                    if (typeResponse == 1): await websocket.close()
+                    # Heartbeat Request Response
+                    elif (typeResponse == 2): await websocket.send(json.dumps(heartbeatNotificationRequest))
+                    # Handle Orderbook Responses
+                    elif (typeResponse == 4):
+                        # Extract bids/asks updates, update 'best 5' lists, & print
+                        allBids = await updateBids(allBids, json.loads(response)["params"]["data"]["bids"])
+                        allAsks = await updateAsks(allAsks, json.loads(response)["params"]["data"]["asks"])
+                        await printBestBidsAndAsks(allBids, allAsks)
+                    # Ignore Other Responses
+                    elif (typeResponse == 3) or (typeResponse == 5) or (typeResponse == 6): continue
 
-                    # Extract bids/asks updates, update 'best 5' lists, & print
-                    bidUpdates = jsonResponse["params"]["data"]["bids"]
-                    askUpdates = jsonResponse["params"]["data"]["asks"]
-                    allBids = await updateBids(allBids, bidUpdates)
-                    allAsks = await updateAsks(allAsks, askUpdates)
-                    await printBestBidsAndAsks(allBids, allAsks)
     
         except websockets.exceptions.ConnectionClosed:
             # Wait & restart connection
             print("Orderbook websocket connection closed. Reconnecting...")
             await asyncio.sleep(5)
 
-# HEARTBEAT HELPER FUNCTIONS
-async def checkHeartbeatResponseForError(jsonResponse:str) -> int:
-    if "error" in jsonResponse:
-        errorMessage = jsonResponse["error"]["message"]
-        print(f"Error: {errorMessage}")
-        return 1
-    
-    if "params" not in jsonResponse:
-        print("Missing 'params' field in response")
-        return 2
-    
-    if "type" not in jsonResponse["params"]:
-        print("Missing 'type' field in response['params']")
-        return 3
-    
-    return 0
-
-async def typeOfResponse(jsonResponse:str) -> int:
-    # Error indicator
-    if "error" in jsonResponse:
-        return 1
-    # Heartbeat/Trade Channel indicators
-    if "params" in jsonResponse:
-        # Heartbeat
-        if "type" in jsonResponse["params"]:
-            responseType = jsonResponse["params"]["type"]
-            if (responseType == "test_request"):
-                return 2
-            if (responseType == "heartbeat"):
-                return 3
-        # Trade Channel
-        if "data" in jsonResponse["params"]:
-            return 4
-    # Neither error, trade channel, or heartbeat indicator (/public/test response?)
-    if "id" in jsonResponse:
-        if jsonResponse["id"] == 2: return 5
-    return 6
 
 # TRADE CHANNEL HELPER FUNCTIONS
 async def getTradeChannelRequestFromSymbol(symbol:str) -> str:
+    print(f"Subscribing to trade channel for {symbol} @ 100ms granularity")
     subscribeRequest = {
         "jsonrpc": "2.0",
-        "id": 2,
+        "id": 4,
         "method": "public/subscribe",
         "params": {
             "channels": [f"trades.{symbol}.100ms"]
@@ -276,79 +310,46 @@ async def subscribeToTradeChannel(symbol:str):
                 print("Connecting to heartbeat mechanism")
                 await websocket.send(json.dumps(heartbeatInitRequest))
                 heartbeatInitResponse = await websocket.recv()
-                heartbeatInitResponse = json.loads(heartbeatInitResponse)
-                initialHeartbeatErrorResponse = await checkFirstResponseForError(heartbeatInitResponse)
-                if (initialHeartbeatErrorResponse != 0): 
-                    print("*error1*, response:")
-                    pprint(heartbeatInitResponse)
-                    await websocket.close()
+                initialHeartbeatErrorResponse = await checkFirstResponseForError(json.loads(heartbeatInitResponse))
+                if (initialHeartbeatErrorResponse != 0): await websocket.close()
 
                 # Subscribe to trade channel
-                print(f"Subscribing to trade channel for {symbol} @ 100ms granularity")
                 subscribeRequest = await getTradeChannelRequestFromSymbol(symbol)
                 await websocket.send(json.dumps(subscribeRequest))
                 tradeChannelInitResponse = await websocket.recv()
-                tradeChannelInitResponse = json.loads(tradeChannelInitResponse)
-                tradeChannelInitErrorResponse = await checkFirstResponseForError(tradeChannelInitResponse)
-                if (tradeChannelInitErrorResponse != 0): 
-                    print("*error2*, response:")
-                    pprint(tradeChannelInitResponse)
-                    await websocket.close()
+                tradeChannelInitErrorResponse = await checkFirstResponseForError(json.loads(tradeChannelInitResponse))
+                if (tradeChannelInitErrorResponse != 0): await websocket.close()
 
-                # Print subscription confirmation
                 print(f"Subscribed to {symbol} Trade Channel.")
 
                 # Listen for updates
                 while True:
+                    # Determine type of response
                     response = await websocket.recv()
-                    jsonResponse = json.loads(response)
-
-                    # Determine if heartbeat request or trade channel notification
-                    typeResponse = await typeOfResponse(jsonResponse)
-                    print("type of response:", typeResponse)
-                    if len(jsonResponse) < 200: pprint(jsonResponse)
-                    else: print("too long of response")
+                    typeResponse = await typeOfResponseTC(json.loads(response))
                     
-                    # Handle Response Based On Type
-                    if (typeResponse == 1): 
-                        print("Error, restarting websocket")
-                        await websocket.close()
-
-                    # Handle heartbeat request
-                    elif (typeResponse == 2):
-                        print("Sending back heartbeat")
-                        await websocket.send(json.dumps(heartbeatNotificationRequest))
-
-                    elif (typeResponse == 4):
-                        # Check response for errors
-                        errorResponse = await checkTradeChannelResponseForError(jsonResponse)
-                        if (errorResponse != 0): 
-                            print("*tradeChannelError*, restarting websocket:")
-                            await websocket.close()
-
-                        # Extract prices/amounts/directions from response & print
-                        # tradeEvents = jsonResponse["params"]["data"]
-                        # await printTradeEvents(tradeEvents)
-
-                    elif (typeResponse == 3) or (typeResponse == 6):
-                        print("null heartbeat response OR nothing...")
-                        print("*null*, response:")
-                        pprint(jsonResponse)
+                    # Error Response
+                    if (typeResponse == 1): await websocket.close()
+                    # Heartbeat Request Response
+                    elif (typeResponse == 2): await websocket.send(json.dumps(heartbeatNotificationRequest))
+                    # Handle trade channel response
+                    elif (typeResponse == 4): await printTradeEvents(json.loads(response)["params"]["data"])
+                    # Ignore Other Responses
+                    elif (typeResponse == 3) or (typeResponse == 5) or (typeResponse == 6): continue
         
         except websockets.exceptions.ConnectionClosed:
             # Wait & restart connection
             print("Trade Channel websocket connection closed. Reconnecting...")
             await asyncio.sleep(5)
 
-# SUBSCRIBE TO HEARTBEAT MECHANISMS
 
 # MAIN FUNCTION
 async def main(symbol):
     # Create tasks
-    # orderbookTask = asyncio.create_task(subscribeToOrderbook(symbol))
+    orderbookTask = asyncio.create_task(subscribeToOrderbook(symbol))
     tradeChannelTask = asyncio.create_task(subscribeToTradeChannel(symbol))
     # 'Wait' for both to complete
-    # await orderbookTask
+    await orderbookTask
     await tradeChannelTask
 
 # -------------------------------------MAIN PROGRAM-------------------------------------
